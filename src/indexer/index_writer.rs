@@ -582,6 +582,25 @@ impl IndexWriter {
         Ok(self.committed_opstamp)
     }
 
+    fn start_commit(&mut self, soft_commit: bool) -> crate::Result<PreparedCommit> {
+        // this will drop the current document channel
+        // and recreate a new one.
+        self.recreate_document_channel();
+
+        let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
+
+        for worker_handle in former_workers_join_handle {
+            let indexing_worker_result = worker_handle
+                .join()
+                .map_err(|e| TantivyError::ErrorInThread(format!("{:?}", e)))?;
+            indexing_worker_result?;
+            self.add_indexing_worker()?;
+        }
+
+        let commit_opstamp = self.stamper.stamp();
+        Ok(PreparedCommit::new(self, commit_opstamp, soft_commit))
+    }
+
     /// Prepares a commit.
     ///
     /// Calling `prepare_commit()` will cut the indexing
@@ -616,23 +635,20 @@ impl IndexWriter {
         // committed segments.
         info!("Preparing commit");
 
-        // this will drop the current document channel
-        // and recreate a new one.
-        self.recreate_document_channel();
+        let prepared_commit = self.start_commit(false)?;
 
-        let former_workers_join_handle = std::mem::take(&mut self.workers_join_handle);
+        info!("Prepared commit {}", prepared_commit.opstamp());
+        Ok(prepared_commit)
+    }
 
-        for worker_handle in former_workers_join_handle {
-            let indexing_worker_result = worker_handle
-                .join()
-                .map_err(|e| TantivyError::ErrorInThread(format!("{:?}", e)))?;
-            indexing_worker_result?;
-            self.add_indexing_worker()?;
-        }
+    /// Prepares a commit inside temporary fast storage
+    ///
+    pub fn prepare_soft_commit(&mut self) -> crate::Result<PreparedCommit> {
+        info!("Preparing soft commit");
 
-        let commit_opstamp = self.stamper.stamp();
-        let prepared_commit = PreparedCommit::new(self, commit_opstamp);
-        info!("Prepared commit {}", commit_opstamp);
+        let prepared_commit = self.start_commit(true)?;
+
+        info!("Prepared soft commit {}", prepared_commit.opstamp());
         Ok(prepared_commit)
     }
 
@@ -651,6 +667,17 @@ impl IndexWriter {
     /// that made it in the commit.
     pub fn commit(&mut self) -> crate::Result<Opstamp> {
         self.prepare_commit()?.commit()
+    }
+
+    /// Commits pending changes to temporary fast storage
+    ///
+    /// This is useful together with `CacheDirectory` so that
+    /// documents become searchable earlier, at the cost of
+    /// availability. Soft committed segments become committed after
+    /// the underlying `Directory` runs  `persist()` and saves
+    /// everything to permanent storage
+    pub fn soft_commit(&mut self) -> crate::Result<Opstamp> {
+        self.prepare_soft_commit()?.commit()
     }
 
     pub(crate) fn segment_updater(&self) -> &SegmentUpdater {

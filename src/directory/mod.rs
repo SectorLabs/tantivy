@@ -10,6 +10,7 @@ mod file_watcher;
 mod footer;
 mod managed_directory;
 mod ram_directory;
+mod cache_directory;
 mod watch_event_router;
 
 /// Errors specific to the directory module.
@@ -29,6 +30,7 @@ pub use self::directory_lock::{Lock, INDEX_WRITER_LOCK, META_LOCK};
 pub(crate) use self::file_slice::{ArcBytes, WeakArcBytes};
 pub use self::file_slice::{FileHandle, FileSlice};
 pub use self::ram_directory::RamDirectory;
+pub use self::cache_directory::CacheDirectory;
 pub use self::watch_event_router::{WatchCallback, WatchCallbackList, WatchHandle};
 
 /// Outcome of the Garbage collection

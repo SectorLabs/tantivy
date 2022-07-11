@@ -464,6 +464,10 @@ impl Directory for MmapDirectory {
         fd.sync_data()?;
         Ok(())
     }
+
+    fn persist(&self) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

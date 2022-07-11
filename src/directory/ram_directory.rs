@@ -230,6 +230,10 @@ impl Directory for RamDirectory {
     fn sync_directory(&self) -> io::Result<()> {
         Ok(())
     }
+
+    fn persist(&self) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

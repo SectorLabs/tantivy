@@ -390,14 +390,22 @@ impl SegmentUpdater {
     /// Apply deletes up to the target opstamp to all segments.
     ///
     /// The method returns copies of the segment entries,
-    /// updated with the delete information.
-    fn purge_deletes(&self, target_opstamp: Opstamp) -> crate::Result<Vec<SegmentEntry>> {
-        let mut segment_entries = self.segment_manager.segment_entries();
-        for segment_entry in &mut segment_entries {
-            let segment = self.index.segment(segment_entry.meta().clone());
-            advance_deletes(segment, segment_entry, target_opstamp)?;
+    /// updated with the delete information, grouped by soft committed status
+    fn purge_deletes(&self, target_opstamp: Opstamp, soft_commit: bool) -> crate::Result<(Vec<SegmentEntry>, Vec<SegmentEntry>)> {
+        let (mut committed_segment_entries, mut soft_committed_segment_entries, mut uncommitted_segment_entries) = self.segment_manager.grouped_segment_entries();
+        for segment_entries in [&mut committed_segment_entries, &mut soft_committed_segment_entries, &mut uncommitted_segment_entries] { 
+            for segment_entry in segment_entries {
+                let segment = self.index.segment(segment_entry.meta().clone());
+                advance_deletes(segment, segment_entry, target_opstamp)?;
+            }
         }
-        Ok(segment_entries)
+        if soft_commit {
+            soft_committed_segment_entries.extend(uncommitted_segment_entries);
+        } else {
+            committed_segment_entries.extend(uncommitted_segment_entries);
+            committed_segment_entries.append(&mut soft_committed_segment_entries);
+        }
+        Ok((committed_segment_entries, soft_committed_segment_entries))
     }
 
     pub fn save_metas(
@@ -462,12 +470,22 @@ impl SegmentUpdater {
         &self,
         opstamp: Opstamp,
         payload: Option<String>,
+        soft_commit: bool,
     ) -> FutureResult<Opstamp> {
         let segment_updater: SegmentUpdater = self.clone();
         self.schedule_task(move || {
-            let segment_entries = segment_updater.purge_deletes(opstamp)?;
-            segment_updater.segment_manager.commit(segment_entries);
+            let index = &segment_updater.index;
+            let directory = index.directory();
+            let (committed_segment_entries, soft_committed_segment_entries) = segment_updater.purge_deletes(opstamp, soft_commit)?;
+            if soft_commit {
+                segment_updater.segment_manager.soft_commit(committed_segment_entries, soft_committed_segment_entries);
+            } else {
+                segment_updater.segment_manager.commit(committed_segment_entries);
+            }
             segment_updater.save_metas(opstamp, payload)?;
+            if !soft_commit {
+                directory.persist()?;
+            }
             let _ = garbage_collect_files(segment_updater.clone());
             segment_updater.consider_merge_options();
             Ok(opstamp)
@@ -560,14 +578,14 @@ impl SegmentUpdater {
         scheduled_result
     }
 
-    pub(crate) fn get_mergeable_segments(&self) -> (Vec<SegmentMeta>, Vec<SegmentMeta>) {
+    pub(crate) fn get_mergeable_segments(&self) -> (Vec<SegmentMeta>, Vec<SegmentMeta>, Vec<SegmentMeta>) {
         let merge_segment_ids: HashSet<SegmentId> = self.merge_operations.segment_in_merge();
         self.segment_manager
             .get_mergeable_segments(&merge_segment_ids)
     }
 
     fn consider_merge_options(&self) {
-        let (committed_segments, uncommitted_segments) = self.get_mergeable_segments();
+        let (committed_segments, soft_committed_segments, uncommitted_segments) = self.get_mergeable_segments();
 
         // Committed segments cannot be merged with uncommitted_segments.
         // We therefore consider merges using these two sets of segments independently.
@@ -583,13 +601,15 @@ impl SegmentUpdater {
             .collect();
 
         let commit_opstamp = self.load_meta().opstamp;
-        let committed_merge_candidates = merge_policy
-            .compute_merge_candidates(&committed_segments)
-            .into_iter()
-            .map(|merge_candidate: MergeCandidate| {
-                MergeOperation::new(&self.merge_operations, commit_opstamp, merge_candidate.0)
-            });
-        merge_candidates.extend(committed_merge_candidates);
+        for segments in [&committed_segments, &soft_committed_segments] {
+            let committed_merge_candidates = merge_policy
+                .compute_merge_candidates(segments)
+                .into_iter()
+                .map(|merge_candidate: MergeCandidate| {
+                    MergeOperation::new(&self.merge_operations, commit_opstamp, merge_candidate.0)
+                });
+            merge_candidates.extend(committed_merge_candidates);
+        }
 
         for merge_operation in merge_candidates {
             // If a merge cannot be started this is not a fatal error.

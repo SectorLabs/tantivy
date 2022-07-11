@@ -224,6 +224,15 @@ pub trait Directory: DirectoryClone + fmt::Debug + Send + Sync + 'static {
     /// `OnCommit` `ReloadPolicy`. Not implementing watch in a `Directory` only prevents the
     /// `OnCommit` `ReloadPolicy` to work properly.
     fn watch(&self, watch_callback: WatchCallback) -> crate::Result<WatchHandle>;
+
+    /// Directories like `NRTDirectory` operate with in memory data, but support
+    /// disk storage. This method triggers persistence.
+    ///
+    /// When `persist()` is called, all finalized in memory files get written through an underlying
+    /// `Directory` implementation.
+    ///
+    /// This is useful for Near Real-Time indexing. The default implementation does nothing.
+    fn persist(&self) -> crate::Result<()>; 
 }
 
 /// DirectoryClone

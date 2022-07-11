@@ -323,6 +323,10 @@ impl Directory for ManagedDirectory {
         self.directory.sync_directory()?;
         Ok(())
     }
+
+    fn persist(&self) -> crate::Result<()> {
+        self.directory.persist()
+    }
 }
 
 impl Clone for ManagedDirectory {

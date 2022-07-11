@@ -124,3 +124,6 @@ harness = false
 name = "index-bench"
 harness = false
 
+[[bench]]
+name = "nrt-indexing"
+harness = false
